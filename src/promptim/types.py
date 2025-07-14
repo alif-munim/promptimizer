@@ -97,9 +97,18 @@ class PromptWrapper(PromptConfig):
                 self._cached = ChatPromptTemplate.from_messages(
                     [("user", self.prompt_str)]
                 )
-                self._postlude = init_chat_model(
-                    **(self.model_config or DEFAULT_PROMPT_MODEL_CONFIG)
-                )
+
+                # Original code
+                # self._postlude = init_chat_model(
+                #     **(self.model_config or DEFAULT_PROMPT_MODEL_CONFIG)
+                # )
+                model_config = self.model_config or DEFAULT_PROMPT_MODEL_CONFIG  
+                if model_config.get("base_url") == "https://openrouter.ai/api/v1":  
+                    # For OpenRouter, ensure the API key is set correctly  
+                    import os  
+                    model_config = model_config.copy()  
+                    model_config["api_key"] = os.getenv("OPENROUTER_API_KEY")  
+                self._postlude = init_chat_model(**model_config)
             else:
                 client = client or ls.Client()
                 postlude = None
@@ -396,18 +405,23 @@ def prompt_schema(
 
     return OptimizedPromptOutput
 
+# Original version
+# def _ensure_stricty(tools: list) -> list:
+#     result = []
+#     for tool in tools:
+#         if isinstance(tool, dict):
+#             strict = None
+#             if func := tool.get("function"):
+#                 if parameters := func.get("parameters"):
+#                     if "strict" in parameters:
+#                         strict = parameters["strict"]
+#             if strict is not None:
+#                 tool = copy.deepcopy(tool)
+#                 tool["function"]["strict"] = strict
+#         result.append(tool)
+#     return result
 
-def _ensure_stricty(tools: list) -> list:
-    result = []
-    for tool in tools:
-        if isinstance(tool, dict):
-            strict = None
-            if func := tool.get("function"):
-                if parameters := func.get("parameters"):
-                    if "strict" in parameters:
-                        strict = parameters["strict"]
-            if strict is not None:
-                tool = copy.deepcopy(tool)
-                tool["function"]["strict"] = strict
-        result.append(tool)
-    return result
+# Provider agnostic version
+def _ensure_stricty(tools: list) -> list:  
+    # Quick fix: Skip strict parameter processing for OpenRouter compatibility  
+    return tools

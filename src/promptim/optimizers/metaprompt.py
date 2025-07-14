@@ -9,7 +9,7 @@ from typing_extensions import Literal
 from trustcall import create_extractor
 import langsmith as ls
 import html
-
+import re
 
 DEFAULT_METAPROMPT = """Diagnose and optimize the quality of the prompt over the target task. Understand the underlying model's behavior patterns, and the underlying data generating process
 so you know how to make the right improvements. Understand the prompt only has the individual input context. Use the aggregate results for deeper understanding.
@@ -171,6 +171,10 @@ class MetaPromptOptimizer(optimizers.BaseOptimizer):
             )
             prompt_output = await self.react_agent(inputs, current_prompt)
             rt.add_outputs({"output": prompt_output})
+
+        # Add a cleaning step for Llama models
+        clean_improved_prompt = re.sub(r'</?TO_OPTIMIZE.*?>', '', prompt_output.improved_prompt).strip()
+
         candidate = pm_types.PromptWrapper.from_prior(
             current_prompt,
             prompt_output.improved_prompt,
@@ -185,54 +189,194 @@ class MetaPromptOptimizer(optimizers.BaseOptimizer):
 
         return [candidate]
 
+    async def _fallback_text_generation(self, inputs: str, current_prompt) -> pm_types.OptimizedPromptOutput:  
+        """Fallback method when structured tool calling fails."""  
+        # We need this to create a simple object that satisfies the Protocol
+        from types import SimpleNamespace
+        
+        fallback_prompt = f"""  
+    {inputs}  
+    
+    Please provide your response in the following JSON format:  
+    {{
+        "analysis": "Your analysis of the current results and improvements needed",
+        "hypothesis": "Brief description of your improvement hypothesis",  
+        "improved_prompt": "The complete improved prompt text"  
+    }}  
+    """  
+        
+        response = await self.model.ainvoke([{"role": "user", "content": fallback_prompt}])  
+        
+        import json  
+        try:  
+            parsed = json.loads(response.content)  
+            # Return a SimpleNamespace object with the required attributes
+            return SimpleNamespace(
+                analysis=parsed.get("analysis", "Fallback analysis"),
+                hypothesis=parsed.get("hypothesis", "Fallback improvement"),  
+                improved_prompt=parsed.get("improved_prompt", current_prompt.get_prompt_str())  
+            )  
+        except:  
+            # Return a SimpleNamespace object for the ultimate fallback as well
+            return SimpleNamespace(
+                analysis="Unable to analyze due to model limitations and JSON parsing failure.",
+                hypothesis="Fallback: Minor refinement",  
+                improved_prompt=current_prompt.get_prompt_str()  
+            )
+
+    # Old version
+    # @ls.traceable
+    # async def react_agent(
+    #     self, inputs: str, current_prompt, n=10 # increased from 5
+    # ) -> pm_types.OptimizedPromptOutput:
+    #     messages = [
+    #         {"role": "user", "content": inputs},
+    #     ]
+    #     tooly = pm_types.prompt_schema(current_prompt)
+
+    #     # Newly added for Llama  
+    #     simple_chain = create_extractor(  
+    #         self.model,  
+    #         tools=[tooly],  
+    #         tool_choice="OptimizedPromptOutput",  
+    #     )  
+        
+    #     # Keep original chains as fallback  
+    #     just_think = create_extractor(  
+    #         self.model,  
+    #         tools=[think, critique],  
+    #         tool_choice="any",  
+    #     )  
+    #     any_chain = create_extractor(  
+    #         self.model,  
+    #         tools=[think, critique, tooly],  
+    #         tool_choice="any",  
+    #     )  
+    #     final_chain = create_extractor(  
+    #         self.model,  
+    #         tools=[tooly],  
+    #         tool_choice="OptimizedPromptOutput",  
+    #     )
+
+    #     # Try simple approach first (3 attempts)  
+    #     for ix in range(min(3, n)):  
+    #         try:  
+    #             response = await simple_chain.ainvoke(messages)  
+    #             final_response = next(  
+    #                 (r for r in response["responses"] if r.__repr_name__() == "OptimizedPromptOutput"),  
+    #                 None,  
+    #             )  
+    #             if final_response:  
+    #                 return final_response  
+    #         except Exception:  
+    #             continue  
+
+    #     for ix in range(n):
+    #         if ix == n - 1:
+    #             # Old implementation
+    #             # chain = final_chain
+    #             try:  
+    #                 chain = final_chain  
+    #                 response = await chain.ainvoke(messages)  
+    #             except Exception:  
+    #                 # Fallback to direct text generation  
+    #                 return await self._fallback_text_generation(inputs, current_prompt)  
+    #         elif ix == 0:
+    #             chain = just_think
+    #         else:
+    #             chain = any_chain
+    #         response = await chain.ainvoke(messages)
+    #         final_response = next(
+    #             (
+    #                 r
+    #                 for r in response["responses"]
+    #                 if r.__repr_name__() == "OptimizedPromptOutput"
+    #             ),
+    #             None,
+    #         )
+    #         if final_response:
+    #             return final_response
+    #         msg: AIMessage = response["messages"][-1]
+    #         messages.append(msg)
+    #         ids = [tc["id"] for tc in (msg.tool_calls or [])]
+    #         for id_ in ids:
+    #             messages.append({"role": "tool", "content": "", "tool_call_id": id_})
+
+    #     raise ValueError(f"Failed to generate response after {n} attempts")
+
+    # Version 2 which tries 10 times first
+    # @ls.traceable
+    # async def react_agent(
+    #     self, inputs: str, current_prompt, n=10 # Increased from 5
+    # ) -> pm_types.OptimizedPromptOutput:
+    #     messages = [
+    #         {"role": "user", "content": inputs},
+    #     ]
+    #     tooly = pm_types.prompt_schema(current_prompt)
+
+    #     # This chain directly asks for the final output. Best for capable models.
+    #     simple_chain = create_extractor(
+    #         self.model,
+    #         tools=[tooly],
+    #         tool_choice="OptimizedPromptOutput",
+    #     )
+        
+    #     # This chain allows for multi-step reasoning (think, critique) before the final output.
+    #     # It's a good fallback if the simple approach fails.
+    #     any_chain = create_extractor(
+    #         self.model,
+    #         tools=[think, critique, tooly],
+    #         tool_choice="any",
+    #     )
+
+    #     for ix in range(n):
+    #         # On the first 3 attempts, try the simple, direct approach
+    #         if ix < 3:
+    #             chain = simple_chain
+    #         # For the remaining attempts, allow for more complex reasoning
+    #         else:
+    #             chain = any_chain
+
+    #         try:
+    #             response = await chain.ainvoke(messages)
+    #             final_response = next(
+    #                 (
+    #                     r
+    #                     for r in response["responses"]
+    #                     if r.__repr_name__() == "OptimizedPromptOutput"
+    #                 ),
+    #                 None,
+    #             )
+    #             if final_response:
+    #                 # Success! We got the structured output we need.
+    #                 return final_response
+                
+    #             # If we didn't get the final output, add the model's thought process
+    #             # to the conversation and try again.
+    #             msg: AIMessage = response["messages"][-1]
+    #             messages.append(msg)
+    #             ids = [tc["id"] for tc in (msg.tool_calls or [])]
+    #             for id_ in ids:
+    #                 messages.append({"role": "tool", "content": "OK.", "tool_call_id": id_})
+
+    #         except Exception as e:
+    #             print(f"Warning: Attempt {ix + 1} failed with error: {e}")
+    #             # If any attempt fails with an error, just continue to the next one.
+    #             # The fallback will be triggered automatically after the loop if all attempts fail.
+    #             continue
+
+    #     # If the loop finishes after n attempts without returning, trigger the fallback.
+    #     print("All attempts failed. Triggering fallback generation.")
+    #     return await self._fallback_text_generation(inputs, current_prompt)
+
+    # Version 3 which goes straight to fallback
     @ls.traceable
     async def react_agent(
-        self, inputs: str, current_prompt, n=5
+        self, inputs: str, current_prompt, n=10
     ) -> pm_types.OptimizedPromptOutput:
-        messages = [
-            {"role": "user", "content": inputs},
-        ]
-        tooly = pm_types.prompt_schema(current_prompt)
-        just_think = create_extractor(
-            self.model,
-            tools=[think, critique],
-            tool_choice="any",
-        )
-        any_chain = create_extractor(
-            self.model,
-            tools=[think, critique, tooly],
-            tool_choice="any",
-        )
-        final_chain = create_extractor(
-            self.model,
-            tools=[tooly],
-            tool_choice="OptimizedPromptOutput",
-        )
-        for ix in range(n):
-            if ix == n - 1:
-                chain = final_chain
-            elif ix == 0:
-                chain = just_think
-            else:
-                chain = any_chain
-            response = await chain.ainvoke(messages)
-            final_response = next(
-                (
-                    r
-                    for r in response["responses"]
-                    if r.__repr_name__() == "OptimizedPromptOutput"
-                ),
-                None,
-            )
-            if final_response:
-                return final_response
-            msg: AIMessage = response["messages"][-1]
-            messages.append(msg)
-            ids = [tc["id"] for tc in (msg.tool_calls or [])]
-            for id_ in ids:
-                messages.append({"role": "tool", "content": "", "tool_call_id": id_})
-
-        raise ValueError(f"Failed to generate response after {n} attempts")
+        # MODIFICATION: Defaulting to fallback for Llama models due to poor tool-calling ability.
+        print("Defaulting directly to fallback generation for this model.")
+        return await self._fallback_text_generation(inputs, current_prompt)
 
 
 def think(thought: str):
