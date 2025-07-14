@@ -122,6 +122,7 @@ class MetaPromptOptimizer(optimizers.BaseOptimizer):
             formatted.append("---")
         return "\n".join(formatted)
 
+
     @ls.traceable
     async def improve_prompt(
         self,
@@ -172,12 +173,27 @@ class MetaPromptOptimizer(optimizers.BaseOptimizer):
             prompt_output = await self.react_agent(inputs, current_prompt)
             rt.add_outputs({"output": prompt_output})
 
-        # Add a cleaning step for Llama models
-        clean_improved_prompt = re.sub(r'</?TO_OPTIMIZE.*?>', '', prompt_output.improved_prompt).strip()
+        # --- Start of Conditional Cleaning Logic ---
+        # Check if the optimizer model is from OpenRouter
+        is_openrouter_model = (
+            hasattr(self.model, "openai_api_base") and 
+            self.model.openai_api_base and 
+            "openrouter.ai" in self.model.openai_api_base
+        )
+
+        if is_openrouter_model:
+            # For OpenRouter/Llama, clean any mistaken tags from the output as a safeguard.
+            print("Cleaning prompt output for OpenRouter model.")
+            clean_improved_prompt = re.sub(r'</?TO_OPTIMIZE.*?>', '', prompt_output.improved_prompt).strip()
+        else:
+            # For standard OpenAI models, trust the output and use it directly.
+            print("Skipping cleaning step for OpenAI model.")
+            clean_improved_prompt = prompt_output.improved_prompt
+        # --- End of Conditional Cleaning Logic ---
 
         candidate = pm_types.PromptWrapper.from_prior(
             current_prompt,
-            prompt_output.improved_prompt,
+            clean_improved_prompt, # Always use the result of the logic above
             extra_info={"hypothesis": prompt_output.hypothesis},
         )
 
@@ -189,40 +205,107 @@ class MetaPromptOptimizer(optimizers.BaseOptimizer):
 
         return [candidate]
 
-    async def _fallback_text_generation(self, inputs: str, current_prompt) -> pm_types.OptimizedPromptOutput:  
-        """Fallback method when structured tool calling fails."""  
-        # We need this to create a simple object that satisfies the Protocol
-        from types import SimpleNamespace
+    # @ls.traceable
+    # async def improve_prompt(
+    #     self,
+    #     history: Sequence[Sequence[pm_types.PromptWrapper]],
+    #     results: List[ExperimentResultRow],
+    #     task: pm_types.Task,
+    #     **kwargs,
+    # ) -> list[pm_types.PromptWrapper]:
+    #     current_prompt = history[-1][-1]
+    #     other_attempts = list(
+    #         {
+    #             html.escape(p.get_prompt_str()): (
+    #                 p,
+    #                 (p.extra.get("hypothesis") or "") if p.extra else "",
+    #             )
+    #             for ps in history
+    #             for p in ps
+    #             if p.get_prompt_str() != current_prompt.get_prompt_str()
+    #         }.values()
+    #     )[-5:]
+
+    #     annotated_results = self._format_results(results)
+    #     async with ls.trace("Optimize") as rt:
+    #         print(f"Optimizing with url {rt.get_url()}", flush=True)
+    #         formatted = current_prompt.get_prompt_str_in_context()
+    #         hypo = (
+    #             current_prompt.extra.get("hypothesis") if current_prompt.extra else None
+    #         )
+    #         if hypo:
+    #             hypo = "Hypothesis for this prompt: " + hypo
+    #         inputs = self.format(
+    #             current_prompt=formatted,
+    #             current_hypo=hypo or "",
+    #             annotated_results=annotated_results,
+    #             task_description=task.describe(),
+    #             other_attempts=(
+    #                 "\n\n---".join(
+    #                     [
+    #                         f"<hypothesis ix={i}>{hypo}</hypothesis>"
+    #                         f"<attempt ix={i}>\n{p.get_prompt_str()}\n</attempt>"
+    #                         for i, (p, hypo) in enumerate(other_attempts)
+    #                     ]
+    #                 )
+    #                 if other_attempts
+    #                 else "N/A"
+    #             ),
+    #         )
+    #         prompt_output = await self.react_agent(inputs, current_prompt)
+    #         rt.add_outputs({"output": prompt_output})
+
+    #     # Add a cleaning step for Llama models
+    #     clean_improved_prompt = re.sub(r'</?TO_OPTIMIZE.*?>', '', prompt_output.improved_prompt).strip()
+
+    #     candidate = pm_types.PromptWrapper.from_prior(
+    #         current_prompt,
+    #         prompt_output.improved_prompt,
+    #         extra_info={"hypothesis": prompt_output.hypothesis},
+    #     )
+
+    #     pm_utils.print_rich_diff(
+    #         current_prompt.get_prompt_str_in_context(),
+    #         candidate.get_prompt_str_in_context(),
+    #         "Updated Prompt",
+    #     )
+
+    #     return [candidate]
+
+    # async def _fallback_text_generation(self, inputs: str, current_prompt) -> pm_types.OptimizedPromptOutput:  
+    #     """Fallback method when structured tool calling fails."""  
+    #     # We need this to create a simple object that satisfies the Protocol
+    #     from types import SimpleNamespace
         
-        fallback_prompt = f"""  
-    {inputs}  
+    #     fallback_prompt = f"""  
+    # {inputs}  
     
-    Please provide your response in the following JSON format:  
-    {{
-        "analysis": "Your analysis of the current results and improvements needed",
-        "hypothesis": "Brief description of your improvement hypothesis",  
-        "improved_prompt": "The complete improved prompt text"  
-    }}  
-    """  
+    # Please provide your response in the following JSON format:  
+    # {{
+    #     "analysis": "Your analysis of the current results and improvements needed",
+    #     "hypothesis": "Brief description of your improvement hypothesis",  
+    #     "improved_prompt": "The complete improved prompt text"  
+    # }}  
+    # """  
         
-        response = await self.model.ainvoke([{"role": "user", "content": fallback_prompt}])  
+    #     response = await self.model.ainvoke([{"role": "user", "content": fallback_prompt}])  
         
-        import json  
-        try:  
-            parsed = json.loads(response.content)  
-            # Return a SimpleNamespace object with the required attributes
-            return SimpleNamespace(
-                analysis=parsed.get("analysis", "Fallback analysis"),
-                hypothesis=parsed.get("hypothesis", "Fallback improvement"),  
-                improved_prompt=parsed.get("improved_prompt", current_prompt.get_prompt_str())  
-            )  
-        except:  
-            # Return a SimpleNamespace object for the ultimate fallback as well
-            return SimpleNamespace(
-                analysis="Unable to analyze due to model limitations and JSON parsing failure.",
-                hypothesis="Fallback: Minor refinement",  
-                improved_prompt=current_prompt.get_prompt_str()  
-            )
+    #     import json  
+    #     try:  
+    #         parsed = json.loads(response.content)  
+    #         # Return a SimpleNamespace object with the required attributes
+    #         return SimpleNamespace(
+    #             analysis=parsed.get("analysis", "Fallback analysis"),
+    #             hypothesis=parsed.get("hypothesis", "Fallback improvement"),  
+    #             improved_prompt=parsed.get("improved_prompt", current_prompt.get_prompt_str())  
+    #         )  
+    #     except:  
+    #         # Return a SimpleNamespace object for the ultimate fallback as well
+    #         return SimpleNamespace(
+    #             analysis="Unable to analyze due to model limitations and JSON parsing failure.",
+    #             hypothesis="Fallback: Minor refinement",  
+    #             improved_prompt=current_prompt.get_prompt_str()  
+    #         )
 
     # Old version
     # @ls.traceable
@@ -370,12 +453,90 @@ class MetaPromptOptimizer(optimizers.BaseOptimizer):
     #     return await self._fallback_text_generation(inputs, current_prompt)
 
     # Version 3 which goes straight to fallback
+    # @ls.traceable
+    # async def react_agent(
+    #     self, inputs: str, current_prompt, n=10
+    # ) -> pm_types.OptimizedPromptOutput:
+    #     # MODIFICATION: Defaulting to fallback for Llama models due to poor tool-calling ability.
+    #     print("Defaulting directly to fallback generation for this model.")
+    #     return await self._fallback_text_generation(inputs, current_prompt)
+
     @ls.traceable
     async def react_agent(
         self, inputs: str, current_prompt, n=10
     ) -> pm_types.OptimizedPromptOutput:
-        # MODIFICATION: Defaulting to fallback for Llama models due to poor tool-calling ability.
-        print("Defaulting directly to fallback generation for this model.")
+        
+        # --- Provider-Specific Logic ---
+        # Default to the powerful tool-calling agent for OpenAI
+        use_fallback_only = False
+        
+        # Check if the optimizer model is from OpenRouter by inspecting its configuration
+        if hasattr(self.model, "openai_api_base") and self.model.openai_api_base and "openrouter.ai" in self.model.openai_api_base:
+            use_fallback_only = True
+
+        if use_fallback_only:
+            # For OpenRouter/Llama, skip the complex agent and go to the reliable fallback
+            print("Optimizer is an OpenRouter model. Defaulting directly to fallback generation.")
+            return await self._fallback_text_generation(inputs, current_prompt)
+        
+        # --- Original, Powerful Agent for OpenAI Models ---
+        print("Optimizer is an OpenAI model. Using standard tool-calling agent.")
+        messages = [
+            {"role": "user", "content": inputs},
+        ]
+        tooly = pm_types.prompt_schema(current_prompt)
+
+        # This chain directly asks for the final output.
+        simple_chain = create_extractor(
+            self.model,
+            tools=[tooly],
+            tool_choice="OptimizedPromptOutput",
+        )
+        
+        # This chain allows for multi-step reasoning (think, critique).
+        any_chain = create_extractor(
+            self.model,
+            tools=[think, critique, tooly],
+            tool_choice="any",
+        )
+
+        for ix in range(n):
+            # On the first 3 attempts, try the simple, direct approach
+            if ix < 3:
+                chain = simple_chain
+            # For the remaining attempts, allow for more complex reasoning
+            else:
+                chain = any_chain
+
+            try:
+                response = await chain.ainvoke(messages)
+                final_response = next(
+                    (
+                        r
+                        for r in response["responses"]
+                        if r.__repr_name__() == "OptimizedPromptOutput"
+                    ),
+                    None,
+                )
+                if final_response:
+                    # Success! We got the structured output we need.
+                    return final_response
+                
+                # If we didn't get the final output, add the model's thought process
+                # to the conversation and try again.
+                msg: AIMessage = response["messages"][-1]
+                messages.append(msg)
+                ids = [tc["id"] for tc in (msg.tool_calls or [])]
+                for id_ in ids:
+                    messages.append({"role": "tool", "content": "OK.", "tool_call_id": id_})
+
+            except Exception as e:
+                print(f"Warning: Attempt {ix + 1} failed with error: {e}")
+                # If any attempt fails with an error, just continue to the next one.
+                continue
+
+        # If the OpenAI agent fails all attempts, it can also use the fallback.
+        print("All tool-calling attempts failed. Triggering fallback generation.")
         return await self._fallback_text_generation(inputs, current_prompt)
 
 

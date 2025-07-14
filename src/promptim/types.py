@@ -17,6 +17,38 @@ from langsmith.utils import LangSmithConflictError
 from pydantic import BaseModel, Field, model_validator
 from promptim._utils import get_var_healer
 import logging
+import os # Make sure os is imported at the top of types.py
+
+def create_chat_model_from_config(model_config: dict) -> BaseChatModel:
+    """
+    Initializes a chat model from a configuration dictionary,
+    handling provider-specific authentication.
+    """
+    config = model_config.copy()
+    provider = config.get("model_provider")
+
+    # This logic block maps the provider to the correct API keys and endpoints
+    if provider == "openrouter":
+        # LangChain uses the 'openai' provider class for OpenRouter's API
+        config['model_provider'] = 'openai'
+        config['openai_api_base'] = config.get('base_url', 'https://openrouter.ai/api/v1')
+        # Use the OPENROUTER_API_KEY from environment variables
+        config['openai_api_key'] = os.getenv("OPENROUTER_API_KEY")
+        # remove base_url to avoid conflicts with openai_api_base
+        config.pop('base_url', None)
+
+    elif provider == "openai":
+        # Let init_chat_model handle it, which defaults to OPENAI_API_KEY env var
+        pass # No special overrides needed
+
+    # You could add other providers like 'anthropic' here in the future
+    # elif provider == "anthropic":
+    #     config['anthropic_api_key'] = os.getenv("ANTHROPIC_API_KEY")
+
+    # Remove our custom provider key before passing to LangChain
+    config.pop('api_key', None) # We use env vars now
+    
+    return init_chat_model(**config)
 
 logger = logging.getLogger(__name__)
 
@@ -91,24 +123,91 @@ class PromptWrapper(PromptConfig):
             which=config.which,
         )
 
+    # def load(self, client: ls.Client | None = None) -> ChatPromptTemplate:
+    #     if self._cached is None:
+    #         if self.prompt_str:
+    #             self._cached = ChatPromptTemplate.from_messages(
+    #                 [("user", self.prompt_str)]
+    #             )
+
+    #             # Original code
+    #             # self._postlude = init_chat_model(
+    #             #     **(self.model_config or DEFAULT_PROMPT_MODEL_CONFIG)
+    #             # )
+    #             model_config = self.model_config or DEFAULT_PROMPT_MODEL_CONFIG  
+    #             if model_config.get("base_url") == "https://openrouter.ai/api/v1":  
+    #                 # For OpenRouter, ensure the API key is set correctly  
+    #                 import os  
+    #                 model_config = model_config.copy()  
+    #                 model_config["api_key"] = os.getenv("OPENROUTER_API_KEY")  
+    #             self._postlude = init_chat_model(**model_config)
+    #         else:
+    #             client = client or ls.Client()
+    #             postlude = None
+    #             prompt = client.pull_prompt(self.identifier, include_model=True)
+    #             if isinstance(prompt, RunnableSequence):
+    #                 prompt, bound_llm = prompt.first, prompt.steps[1]
+    #                 new_model = None
+
+    #                 if isinstance(bound_llm, RunnableBinding):
+    #                     if tools := bound_llm.kwargs.get("tools"):
+    #                         bound_llm.kwargs["tools"] = _ensure_stricty(tools)
+    #                     if new_model:
+    #                         bound_llm = new_model.bind(
+    #                             **{
+    #                                 k: v
+    #                                 for k, v in bound_llm.kwargs.items()
+    #                                 if k not in ("model", "model_name")
+    #                             }
+    #                         )
+    #                 else:
+    #                     if new_model:
+    #                         bound_llm = new_model
+    #                 if isinstance(prompt, StructuredPrompt) and isinstance(
+    #                     bound_llm, RunnableBinding
+    #                 ):
+    #                     seq: RunnableSequence = prompt | bound_llm.bound
+
+    #                     rebound_llm = seq.steps[1]
+    #                     if tools := rebound_llm.kwargs.get("tools"):
+    #                         rebound_llm.kwargs["tools"] = _ensure_stricty(tools)
+    #                     parser = seq.steps[2]
+    #                     postlude = RunnableSequence(
+    #                         rebound_llm.bind(
+    #                             **{
+    #                                 k: v
+    #                                 for k, v in (
+    #                                     dict((bound_llm.kwargs or {}))
+    #                                     | (self.model_config or {})
+    #                                 ).items()
+    #                                 if k not in rebound_llm.kwargs
+    #                                 and k not in ("model", "model_name")
+    #                             }
+    #                         ),
+    #                         parser,
+    #                     )
+    #                 else:
+    #                     postlude = bound_llm
+    #             else:
+    #                 postlude = init_chat_model(
+    #                     **(self.model_config or DEFAULT_PROMPT_MODEL_CONFIG)
+    #                 )
+    #                 if isinstance(prompt, StructuredPrompt):
+    #                     postlude = RunnableSequence(*(prompt | postlude).steps[1:])
+    #             self._cached = prompt
+    #             self._postlude = postlude
+    #     return self._cached
+
     def load(self, client: ls.Client | None = None) -> ChatPromptTemplate:
         if self._cached is None:
             if self.prompt_str:
                 self._cached = ChatPromptTemplate.from_messages(
                     [("user", self.prompt_str)]
                 )
-
-                # Original code
-                # self._postlude = init_chat_model(
-                #     **(self.model_config or DEFAULT_PROMPT_MODEL_CONFIG)
-                # )
-                model_config = self.model_config or DEFAULT_PROMPT_MODEL_CONFIG  
-                if model_config.get("base_url") == "https://openrouter.ai/api/v1":  
-                    # For OpenRouter, ensure the API key is set correctly  
-                    import os  
-                    model_config = model_config.copy()  
-                    model_config["api_key"] = os.getenv("OPENROUTER_API_KEY")  
-                self._postlude = init_chat_model(**model_config)
+                
+                # REPLACED: The old logic is replaced with a call to our new helper function
+                model_config = self.model_config or DEFAULT_PROMPT_MODEL_CONFIG
+                self._postlude = create_chat_model_from_config(model_config)
             else:
                 client = client or ls.Client()
                 postlude = None
@@ -157,9 +256,9 @@ class PromptWrapper(PromptConfig):
                     else:
                         postlude = bound_llm
                 else:
-                    postlude = init_chat_model(
-                        **(self.model_config or DEFAULT_PROMPT_MODEL_CONFIG)
-                    )
+                    # REPLACED: Also update this fallback initialization
+                    model_config = self.model_config or DEFAULT_PROMPT_MODEL_CONFIG
+                    postlude = create_chat_model_from_config(model_config)
                     if isinstance(prompt, StructuredPrompt):
                         postlude = RunnableSequence(*(prompt | postlude).steps[1:])
                 self._cached = prompt

@@ -861,23 +861,38 @@ class PromptOptimizer(PromptTrainer):
     #     meta_prompt = cp.pop("meta_prompt", None)
     #     return cls(model=model, meta_prompt=meta_prompt, **cp)
 
-    @classmethod  
-    def from_config(cls, config: dict):  
-        """Legacy config method that assumes metaprompt optimizer."""  
-        cp = config.copy()  
-        model_config = cp.pop("model", pm_types.DEFAULT_OPTIMIZER_MODEL_CONFIG)  
+    # @classmethod  
+    # def from_config(cls, config: dict):  
+    #     """Legacy config method that assumes metaprompt optimizer."""  
+    #     cp = config.copy()  
+    #     model_config = cp.pop("model", pm_types.DEFAULT_OPTIMIZER_MODEL_CONFIG)  
         
-        # Handle OpenRouter authentication  
-        if model_config.get("base_url") == "https://openrouter.ai/api/v1":  
-            import os  
-            model_config = model_config.copy()  
-            # Use OPENROUTER_API_KEY if available, otherwise fall back to OPENAI_API_KEY  
-            openrouter_key = os.getenv("OPENROUTER_API_KEY")  
-            if openrouter_key:  
-                model_config["api_key"] = openrouter_key  
+    #     # Handle OpenRouter authentication  
+    #     if model_config.get("base_url") == "https://openrouter.ai/api/v1":  
+    #         import os  
+    #         model_config = model_config.copy()  
+    #         # Use OPENROUTER_API_KEY if available, otherwise fall back to OPENAI_API_KEY  
+    #         openrouter_key = os.getenv("OPENROUTER_API_KEY")  
+    #         if openrouter_key:  
+    #             model_config["api_key"] = openrouter_key  
         
-        model = init_chat_model(**model_config)  
-        meta_prompt = cp.pop("meta_prompt", None)  
+    #     model = init_chat_model(**model_config)  
+    #     meta_prompt = cp.pop("meta_prompt", None)  
+    #     return cls(model=model, meta_prompt=meta_prompt, **cp)
+
+    @classmethod
+    def from_config(cls, config: dict):
+        """Legacy config method that assumes metaprompt optimizer."""
+        # Make sure the new helper is imported at the top of trainer.py
+        # from promptim.types import create_chat_model_from_config
+        
+        cp = config.copy()
+        model_config = cp.pop("model", pm_types.DEFAULT_OPTIMIZER_MODEL_CONFIG)
+        
+        # REPLACED: The old logic is replaced with a call to our new helper function
+        model = create_chat_model_from_config(model_config)
+        
+        meta_prompt = cp.pop("meta_prompt", None)
         return cls(model=model, meta_prompt=meta_prompt, **cp)
 
     async def apply_metaprompt(
