@@ -851,35 +851,6 @@ class PromptOptimizer(PromptTrainer):
         self.model = model  # For backward compatibility
         self.meta_prompt = meta_prompt or pm_types.DEFAULT_METAPROMPT
 
-    # Original from_config
-    # @classmethod
-    # def from_config(cls, config: dict):
-    #     """Legacy config method that assumes metaprompt optimizer."""
-    #     cp = config.copy()
-    #     model_config = cp.pop("model", pm_types.DEFAULT_OPTIMIZER_MODEL_CONFIG)
-    #     model = init_chat_model(**model_config)
-    #     meta_prompt = cp.pop("meta_prompt", None)
-    #     return cls(model=model, meta_prompt=meta_prompt, **cp)
-
-    # @classmethod  
-    # def from_config(cls, config: dict):  
-    #     """Legacy config method that assumes metaprompt optimizer."""  
-    #     cp = config.copy()  
-    #     model_config = cp.pop("model", pm_types.DEFAULT_OPTIMIZER_MODEL_CONFIG)  
-        
-    #     # Handle OpenRouter authentication  
-    #     if model_config.get("base_url") == "https://openrouter.ai/api/v1":  
-    #         import os  
-    #         model_config = model_config.copy()  
-    #         # Use OPENROUTER_API_KEY if available, otherwise fall back to OPENAI_API_KEY  
-    #         openrouter_key = os.getenv("OPENROUTER_API_KEY")  
-    #         if openrouter_key:  
-    #             model_config["api_key"] = openrouter_key  
-        
-    #     model = init_chat_model(**model_config)  
-    #     meta_prompt = cp.pop("meta_prompt", None)  
-    #     return cls(model=model, meta_prompt=meta_prompt, **cp)
-
     @classmethod
     def from_config(cls, config: dict):
         """Legacy config method that assumes metaprompt optimizer."""

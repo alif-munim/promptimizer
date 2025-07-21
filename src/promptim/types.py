@@ -17,7 +17,8 @@ from langsmith.utils import LangSmithConflictError
 from pydantic import BaseModel, Field, model_validator
 from promptim._utils import get_var_healer
 import logging
-import os # Make sure os is imported at the top of types.py
+import os 
+import copy
 
 def create_chat_model_from_config(model_config: dict) -> BaseChatModel:
     """
@@ -122,81 +123,6 @@ class PromptWrapper(PromptConfig):
             model_config=config.model_config,
             which=config.which,
         )
-
-    # def load(self, client: ls.Client | None = None) -> ChatPromptTemplate:
-    #     if self._cached is None:
-    #         if self.prompt_str:
-    #             self._cached = ChatPromptTemplate.from_messages(
-    #                 [("user", self.prompt_str)]
-    #             )
-
-    #             # Original code
-    #             # self._postlude = init_chat_model(
-    #             #     **(self.model_config or DEFAULT_PROMPT_MODEL_CONFIG)
-    #             # )
-    #             model_config = self.model_config or DEFAULT_PROMPT_MODEL_CONFIG  
-    #             if model_config.get("base_url") == "https://openrouter.ai/api/v1":  
-    #                 # For OpenRouter, ensure the API key is set correctly  
-    #                 import os  
-    #                 model_config = model_config.copy()  
-    #                 model_config["api_key"] = os.getenv("OPENROUTER_API_KEY")  
-    #             self._postlude = init_chat_model(**model_config)
-    #         else:
-    #             client = client or ls.Client()
-    #             postlude = None
-    #             prompt = client.pull_prompt(self.identifier, include_model=True)
-    #             if isinstance(prompt, RunnableSequence):
-    #                 prompt, bound_llm = prompt.first, prompt.steps[1]
-    #                 new_model = None
-
-    #                 if isinstance(bound_llm, RunnableBinding):
-    #                     if tools := bound_llm.kwargs.get("tools"):
-    #                         bound_llm.kwargs["tools"] = _ensure_stricty(tools)
-    #                     if new_model:
-    #                         bound_llm = new_model.bind(
-    #                             **{
-    #                                 k: v
-    #                                 for k, v in bound_llm.kwargs.items()
-    #                                 if k not in ("model", "model_name")
-    #                             }
-    #                         )
-    #                 else:
-    #                     if new_model:
-    #                         bound_llm = new_model
-    #                 if isinstance(prompt, StructuredPrompt) and isinstance(
-    #                     bound_llm, RunnableBinding
-    #                 ):
-    #                     seq: RunnableSequence = prompt | bound_llm.bound
-
-    #                     rebound_llm = seq.steps[1]
-    #                     if tools := rebound_llm.kwargs.get("tools"):
-    #                         rebound_llm.kwargs["tools"] = _ensure_stricty(tools)
-    #                     parser = seq.steps[2]
-    #                     postlude = RunnableSequence(
-    #                         rebound_llm.bind(
-    #                             **{
-    #                                 k: v
-    #                                 for k, v in (
-    #                                     dict((bound_llm.kwargs or {}))
-    #                                     | (self.model_config or {})
-    #                                 ).items()
-    #                                 if k not in rebound_llm.kwargs
-    #                                 and k not in ("model", "model_name")
-    #                             }
-    #                         ),
-    #                         parser,
-    #                     )
-    #                 else:
-    #                     postlude = bound_llm
-    #             else:
-    #                 postlude = init_chat_model(
-    #                     **(self.model_config or DEFAULT_PROMPT_MODEL_CONFIG)
-    #                 )
-    #                 if isinstance(prompt, StructuredPrompt):
-    #                     postlude = RunnableSequence(*(prompt | postlude).steps[1:])
-    #             self._cached = prompt
-    #             self._postlude = postlude
-    #     return self._cached
 
     def load(self, client: ls.Client | None = None) -> ChatPromptTemplate:
         if self._cached is None:
@@ -504,23 +430,34 @@ def prompt_schema(
 
     return OptimizedPromptOutput
 
-# Original version
-# def _ensure_stricty(tools: list) -> list:
-#     result = []
-#     for tool in tools:
-#         if isinstance(tool, dict):
-#             strict = None
-#             if func := tool.get("function"):
-#                 if parameters := func.get("parameters"):
-#                     if "strict" in parameters:
-#                         strict = parameters["strict"]
-#             if strict is not None:
-#                 tool = copy.deepcopy(tool)
-#                 tool["function"]["strict"] = strict
-#         result.append(tool)
-#     return result
 
-# Provider agnostic version
-def _ensure_stricty(tools: list) -> list:  
-    # Quick fix: Skip strict parameter processing for OpenRouter compatibility  
-    return tools
+def _ensure_stricty(tools: list, model: BaseChatModel) -> list:
+    """
+    Handles provider-specific tool parameters. For OpenRouter, it bypasses
+    special handling. For others (like Anthropic), it processes the 'strict' parameter.
+    """
+    # Get the underlying model instance, as it might be wrapped
+    actual_model = getattr(model, 'bound', model)
+
+    # Identify OpenRouter models by their unique base URL and return tools unmodified
+    # because the 'strict' parameter is not supported and can cause errors.
+    base_url = str(getattr(getattr(actual_model, 'client', None), 'base_url', ''))
+    if "openrouter.ai" in base_url:
+        return tools
+
+    # For other models (e.g., Anthropic), proceed with the original logic
+    # to handle the 'strict' parameter if it exists.
+    result = []
+    for tool in tools:
+        if isinstance(tool, dict):
+            strict = None
+            if func := tool.get("function"):
+                if parameters := func.get("parameters"):
+                    if "strict" in parameters:
+                        strict = parameters["strict"]
+            
+            if strict is not None:
+                tool = copy.deepcopy(tool)
+                tool["function"]["strict"] = strict
+        result.append(tool)
+    return result
